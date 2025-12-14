@@ -11,7 +11,7 @@ class TestLogin:
         log.info(f"获取到的Token: {login_fixture}")
         
         with allure.step("步骤1：输入用户名"):
-            log.info("输入用户名: admin")
+            log.info("输入用户名: admin_V2_自动触发测试")
         
         with allure.step("步骤2：输入密码"):
             log.info("输入密码: *****")
