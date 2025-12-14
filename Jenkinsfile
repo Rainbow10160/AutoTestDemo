@@ -1,15 +1,12 @@
 pipeline {
     agent any
     
-    tools {
-        // 在 Jenkins 中配置的 Python
-        python "Python3"  // 需要在 Jenkins 全局工具配置中定义
-    }
-    
     environment {
         // 项目特定环境变量
         PROJECT_DIR = "${WORKSPACE}"
         VENV_PATH = "${PROJECT_DIR}/venv"
+        // 某些系统可能需要指定字符集避免中文乱码
+        LANG = "C.UTF-8"
     }
     
     stages {
@@ -17,8 +14,8 @@ pipeline {
             steps {
                 script {
                     echo "工作目录: ${WORKSPACE}"
-                    sh 'python3 --version'
-                    sh 'pip3 --version'
+                    // 检查机器上是否安装了 python3
+                    sh 'python3 --version' 
                 }
             }
         }
@@ -26,14 +23,13 @@ pipeline {
         stage('2. 创建虚拟环境') {
             steps {
                 script {
-                    echo '正在创建虚拟环境...'
+                    echo '正在重建虚拟环境...'
                     sh '''
-                    # 删除旧的虚拟环境
-                    rm -rf venv
-                    # 创建新的虚拟环境
+                    # 如果存在则删除，保证环境纯净
+                    if [ -d "venv" ]; then
+                        rm -rf venv
+                    fi
                     python3 -m venv venv
-                    # 验证
-                    ls -la venv/bin/python
                     '''
                 }
             }
@@ -44,14 +40,15 @@ pipeline {
                 script {
                     echo '正在安装依赖...'
                     sh '''
-                    # 激活虚拟环境
-                    source venv/bin/activate
-                    # 升级 pip
+                    # 注意：在 Jenkins sh 中，source 必须和命令在同一个 block 里
+                    . venv/bin/activate
                     pip install --upgrade pip
-                    # 安装依赖
-                    pip install -r requirements.txt
-                    # 列出已安装的包
-                    pip list
+                    
+                    if [ -f "requirements.txt" ]; then
+                        pip install -r requirements.txt
+                    else
+                        echo "警告：未找到 requirements.txt"
+                    fi
                     '''
                 }
             }
@@ -62,12 +59,11 @@ pipeline {
                 script {
                     echo '正在执行测试...'
                     sh '''
-                    # 激活虚拟环境
-                    source venv/bin/activate
-                    # 设置 PYTHONPATH
+                    . venv/bin/activate
                     export PYTHONPATH="${WORKSPACE}:$PYTHONPATH"
-                    # 运行测试
-                    pytest test_cases/ -v --alluredir=./allure-results
+                    
+                    # 运行测试 (加上 || true 确保即使测试失败，流水线也能继续执行去生成报告)
+                    pytest test_cases/ -v --alluredir=./allure-results || true
                     '''
                 }
             }
@@ -77,6 +73,7 @@ pipeline {
             steps {
                 script {
                     echo '正在生成 Allure 报告...'
+                    // 确保你的 Jenkins 已经安装 Allure 插件并在"全局工具配置"中配置了 Allure Commandline
                     allure([
                         includeProperties: false,
                         jdk: '',
@@ -91,19 +88,16 @@ pipeline {
     
     post {
         always {
-            echo '清理工作空间...'
-            // 可选：保留虚拟环境
-            // sh 'rm -rf venv'
-            
-            // 生成汇总报告
             script {
-                def currentResult = currentBuild.currentResult
-                if (currentResult == 'FAILURE') {
-                    echo "构建失败！"
-                } else {
-                    echo "构建成功！"
+                // 如果是 failure，发送通知等操作可以在这里做
+                if (currentBuild.currentResult == 'FAILURE') {
+                    echo "构建检测到失败，请检查测试报告。"
                 }
             }
+        }
+        cleanup {
+            // 构建完成后清理工作空间，节省磁盘
+            cleanWs()
         }
     }
 }
