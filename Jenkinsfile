@@ -1,41 +1,98 @@
 pipeline {
-    agent any
-
-    // 关键点1：Mac上必须配置环境变量，否则Jenkins找不到 pip3 和 pytest
-    environment {
-        // /opt/homebrew/bin 是 M1/M2/M3 芯片的路径
-        // /usr/local/bin 是 Intel 芯片的路径
-        // 这样写可以同时兼容两种 Mac
-        PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
-        // 防止中文乱码
-        PYTHONIOENCODING = "utf-8"
+    agent {
+        label 'master'  // 或你的节点标签
     }
-
+    
+    environment {
+        // 使用绝对路径
+        PYTHON = '/usr/bin/python3'
+        PIP = '/usr/bin/pip3'
+        VENV = "${WORKSPACE}/.venv"
+    }
+    
     stages {
-        stage('1. 环境准备') {
+        stage('Clean Workspace') {
             steps {
-                echo '正在安装依赖...'
-                // Mac 上通常使用 pip3
-                sh 'pip3 install -r requirements.txt'
+                cleanWs()  // 清理工作空间
             }
         }
         
-        stage('2. 执行测试') {
+        stage('Setup Python Environment') {
             steps {
-                echo '正在执行测试...'
-                // 关键点2：Mac 支持 "|| true" 写法
-                // 意思是：即使测试失败了，也要强行返回“成功”，好让流水线继续往下走去生成报告
-                sh 'pytest --alluredir=./report/tmp || true'
+                script {
+                    echo "Python 版本:"
+                    sh "${PYTHON} --version"
+                    
+                    echo "创建虚拟环境..."
+                    sh """
+                    ${PYTHON} -m venv "${VENV}"
+                    """
+                    
+                    echo "激活虚拟环境并安装依赖..."
+                    sh """
+                    . "${VENV}/bin/activate"
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                    # 验证安装
+                    pip list | grep -E "pytest|allure"
+                    """
+                }
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                script {
+                    echo "运行测试..."
+                    sh """
+                    . "${VENV}/bin/activate"
+                    # 设置项目路径
+                    export PYTHONPATH="${WORKSPACE}:${PYTHONPATH}"
+                    # 运行测试
+                    python -m pytest test_cases/ \\
+                        -v \\
+                        --tb=short \\
+                        --alluredir=allure-results \\
+                        --junitxml=junit-results.xml
+                    """
+                }
+            }
+        }
+        
+        stage('Generate Report') {
+            steps {
+                script {
+                    echo "生成测试报告..."
+                    allure([
+                        includeProperties: false,
+                        jdk: '',
+                        properties: [],
+                        reportBuildPolicy: 'ALWAYS',
+                        results: [[path: 'allure-results']],
+                        reportPath: 'allure-report'
+                    ])
+                    
+                    // 同时保存 JUnit 报告
+                    junit 'junit-results.xml'
+                }
             }
         }
     }
-
+    
     post {
         always {
-            echo '正在生成 Allure 报告...'
-            // 关键点3：commandline: 'Allure2' 必须加！
-            // 名字要和你 Jenkins 全局工具配置里的名字一模一样
-            allure commandline: 'Allure2', includeProperties: false, jdk: '', results: [[path: 'report/tmp']]
+            script {
+                // 可选：保留虚拟环境用于调试
+                if (currentBuild.currentResult == 'FAILURE') {
+                    echo "构建失败，保留虚拟环境用于调试: ${VENV}"
+                } else {
+                    // 成功时清理
+                    sh "rm -rf ${VENV}"
+                }
+                
+                // 归档结果
+                archiveArtifacts artifacts: 'allure-report/**', fingerprint: true
+            }
         }
     }
 }
